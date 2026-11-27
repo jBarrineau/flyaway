@@ -532,7 +532,7 @@ function resetWorld() {
   clearStars();
   while (genX < 60) addRing();
   Object.assign(P, { mode: 'hang', ring: rings[0], lastRing: rings[0], theta: 0.35, omega: 0, x: 0, y: 0, vx: 0, vy: 0, phi: 0, phiStart: 0,
-    spinBase: 0, tuck: 0, reach: 0, tuckRot: 0, absRot: 0, grip: 1, reaching: false, kickUsed: false, kickPulse: 0, visOff: 0,
+    spinBase: 0, tuck: 0, reach: 0, tuckRot: 0, absRot: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, kickPulse: 0, visOff: 0,
     releasedRing: null, releaseT: 0, landT: 0, flipShown: 0, maxRing: 0 });
   hangPos();
   cam.x = P.x + 4; cam.y = 7;
@@ -580,9 +580,9 @@ function capEnergy() {
 function kick(auto = false) {
   if (P.mode !== 'hang' || P.kickUsed) return;
   if (Math.abs(P.theta) > 0.6) return; // only inside the bottom window
-  P.kickUsed = true;
   const q = clamp(1 - Math.abs(P.theta) / 0.6, 0, 1);
   const s = Math.sign(P.omega) || 1;
+  P.kickUsed = true; P.kickDir = s; // one kick per half-swing (see unlock in updatePlayer)
   P.omega += s * (0.1 + 0.8 * q * q) * Math.sqrt(G / Le());
   capEnergy();
   P.kickPulse = 1;
@@ -636,7 +636,7 @@ function catchRing(r, th, diff) {
   P.mode = 'hang'; P.reaching = false; P.ring = r; P.theta = th; P.omega = clamp(tang / l, -7, 7);
   capEnergy();
   P.visOff = P.phi - th - k * TAU;
-  if (from && r.i > from.i) P.grip = 1; P.kickUsed = Math.abs(th) < 0.6;
+  if (from && r.i > from.i) P.grip = 1; P.kickUsed = Math.abs(th) < 0.6; P.kickDir = Math.sign(P.omega);
   P.lastRing = r; r.fumbleT = 0;
   hangPos();
   sfx.catch();
@@ -704,7 +704,7 @@ function land() {
 }
 function respawn() {
   const r = P.lastRing;
-  Object.assign(P, { mode: 'hang', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, visOff: 0, tuck: 0, reach: 0 });
+  Object.assign(P, { mode: 'hang', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, visOff: 0, tuck: 0, reach: 0 });
   r.fumbleT = 0;
   hangPos();
 }
@@ -770,7 +770,9 @@ function updatePlayer(dt) {
       P.omega += a * h; P.theta += P.omega * h;
     }
     capEnergy();
-    if (Math.abs(P.theta) > 0.6) P.kickUsed = false;
+    // unlock the kick once the swing leaves the bottom window OR turns around —
+    // small swings never leave the window, so without the turn check TUCK would lock up
+    if (Math.abs(P.theta) > 0.6 || (P.omega !== 0 && Math.sign(P.omega) !== P.kickDir)) P.kickUsed = false;
     if (state === 'menu' && Math.abs(P.theta) < 0.15 && Math.abs(P.omega) < 2.6) kick(true); // demo swing
     P.ring.theta = P.theta; P.ring.omega = P.omega;
     hangPos();
