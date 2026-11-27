@@ -15,6 +15,9 @@ You can catch a bar two ways:
 
 When you reach in the air, your body turns to whichever is closer, hands-up or feet-up. Tricks count in half-turns, so a knee catch after a hands release is a half turn, 1½, 2½ and so on. Layouts and perfect catches score ×1.5, chained catches build a combo, and gold bars give you an extra life.
 
+### Practice mode
+Press **P** on the title screen, or tap **PRACTICE**, to play without lives or a grip timer. You can fall into the pit as often as you like and hang on as long as you want, and every trick still scores. Press **Esc** or tap **END** to finish the run and see your results. Practice has its own best score, so it never replaces your real high score. On the results screen, Space plays the same mode again, and **N** or **P** switches modes.
+
 ### Extras
 - **Stars**: Grab ★ in mid-air. Each star in a streak is worth more than the last. Pink **mega-stars** sit high up and are worth 1,000.
 - **FEVER**: Chain 5 catches to double all your points. The arena goes rainbow and the music kicks into full gear. Landing in the pit ends it.

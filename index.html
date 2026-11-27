@@ -64,6 +64,15 @@
   #fever.on { opacity:1; }
   @keyframes feverhue { from { filter:hue-rotate(0deg); } to { filter:hue-rotate(360deg); } }
   #combo.fire { color:#ff7bf5; animation:pulse .5s ease-in-out infinite; transform-origin:left center; }
+  .alt { display:inline-block; margin-top:16px; font-family:'Bungee',sans-serif; font-size:16px; padding:8px 20px; border-radius:30px;
+    border:2px solid #ffffff66; background:#ffffff14; pointer-events:auto; cursor:pointer; }
+  .alt:hover { background:#ffffff28; }
+  #overlay.hidden .alt { pointer-events:none; }
+  #modetag { font-family:'Bungee',sans-serif; font-size:16px; color:#5ce1e6; letter-spacing:2px; text-shadow:0 2px 0 #0008; display:none; }
+  #endBtn { display:none; margin-top:8px; font-family:'Bungee',sans-serif; font-size:13px; padding:5px 12px; border-radius:20px;
+    border:2px solid #ffffff55; background:#0006; color:#fff; pointer-events:auto; cursor:pointer; }
+  body.practice #modetag, body.practice.playing #endBtn { display:inline-block; }
+  body.practice #lives, body.practice #gripwrap { display:none; }
   #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; }
   @media (max-width:560px) { #stats { grid-template-columns:repeat(2,1fr); } }
   #touchzones { position:fixed; inset:auto 0 0 0; height:38%; display:none; pointer-events:none; }
@@ -82,7 +91,7 @@
 <div id="flash"></div>
 <div id="hud">
   <div id="left"><div id="score">0</div><div id="combo"></div><div id="stars"></div></div>
-  <div id="right"><div id="lives"></div><div id="best">BEST 0</div><div id="ringno">BAR 1</div></div>
+  <div id="right"><div id="lives"></div><div id="modetag">PRACTICE</div><div id="best">BEST 0</div><div id="ringno">BAR 1</div><button id="endBtn"><span class="kbd">ESC · </span>END</button></div>
   <div id="hint"></div>
   <div id="gripwrap"><div id="griplabel">GRIP</div><div id="gripbar"><div id="gripfill"></div></div></div>
 </div>
@@ -102,14 +111,17 @@
     <p class="tips">Catch with your <strong>hands</strong> when you're upright (open up from your tuck first), or hook the bar with your <strong>knees</strong> when you're upside-down — knee hangs score a bonus but your grip tires faster. Layouts ×1.5 · Perfect catches ×1.5 ·
       Chain catches for a combo — hit ×5 for <strong>FEVER</strong> (double points!) · Grab ★ stars mid-air · Gold bars give an extra life. Don't run out of grip!</p>
     <div class="go"><span class="kbd">PRESS SPACE</span><span class="tch">TAP</span> TO START</div>
+    <div><div class="alt" data-mode="practice"><span class="kbd">P · </span>PRACTICE</div></div>
+    <p class="tips" style="margin-top:10px">Practice: no lives, no grip timer — scores still count. End it any time with <span class="kbd">ESC</span><span class="tch">END</span>.</p>
   </div>
   <div class="panel" id="overPanel" style="display:none">
-    <h1>GAME OVER</h1>
+    <h1 id="overTitle">GAME OVER</h1>
     <div id="final">0</div>
     <div id="newbest">★ NEW BEST! ★</div>
     <div id="finalbest">BEST 0</div>
     <div id="stats"></div>
     <div class="go"><span class="kbd">PRESS SPACE</span><span class="tch">TAP</span> TO GO AGAIN</div>
+    <div><div class="alt" id="switchMode" data-mode="practice"><span class="kbd">P · </span>PRACTICE</div></div>
   </div>
 </div>
 
@@ -521,7 +533,7 @@ function updateMusic() {
 const $ = id => document.getElementById(id);
 const ui = { score: $('score'), combo: $('combo'), lives: $('lives'), best: $('best'), ringno: $('ringno'), grip: $('gripfill'), hint: $('hint'), pops: $('popups'),
   overlay: $('overlay'), menu: $('menuPanel'), over: $('overPanel'), final: $('final'), finalbest: $('finalbest'),
-  stars: $('stars'), fever: $('fever'), flash: $('flash'), newbest: $('newbest'), stats: $('stats') };
+  stars: $('stars'), fever: $('fever'), flash: $('flash'), newbest: $('newbest'), stats: $('stats'), overTitle: $('overTitle'), switchMode: $('switchMode') };
 const HYPE = ['SICK!', 'UNREAL!', 'WHAT?!', 'INSANE!', 'LEGENDARY!', 'NO WAY!', 'BONKERS!', 'SKY HIGH!', 'OH MY!'];
 const pick = a => a[Math.floor(Math.random() * a.length)];
 function flashScreen(a = 0.5) { ui.flash.style.transition = 'none'; ui.flash.style.opacity = a; requestAnimationFrame(() => { ui.flash.style.transition = 'opacity .35s'; ui.flash.style.opacity = 0; }); }
@@ -530,7 +542,12 @@ function popup(text, cls = '') {
   ui.pops.appendChild(d); d.addEventListener('animationend', () => d.remove());
   while (ui.pops.children.length > 6) ui.pops.firstChild.remove();
 }
-let best = 0; try { best = +localStorage.getItem('flyaway-best') || 0; } catch (e) {}
+// practice runs keep their own best so unlimited lives can't inflate the real high score
+const BEST_KEY = { normal: 'flyaway-best', practice: 'flyaway-best-practice' };
+const bests = { normal: 0, practice: 0 };
+for (const k in BEST_KEY) { try { bests[k] = +localStorage.getItem(BEST_KEY[k]) || 0; } catch (e) {} }
+let practice = false; // practice mode: no lives, no grip timer, scoring unchanged
+let best = bests.normal;
 
 // ================= game state =================
 let state = 'menu', time = 0, score = 0, lives = 3, combo = 0, overT = 0, tutorialDone = false;
@@ -557,8 +574,11 @@ function resetWorld() {
   hangPos();
   cam.x = P.x + 4; cam.y = 7;
 }
-function startGame() {
+function startGame(practiceMode = practice) {
   ac();
+  practice = practiceMode; best = bests[practice ? 'practice' : 'normal'];
+  document.body.classList.toggle('practice', practice);
+  document.body.classList.add('playing');
   state = 'play'; score = 0; lives = 3; combo = 0; tutorialDone = false;
   fever = false; starCount = 0; starChain = 0; musicLevel = 0;
   stats = { bestCombo: 0, bestFlip: 0, bestFlipName: '—', stars: 0, clutch: 0 };
@@ -569,14 +589,19 @@ function startGame() {
 }
 function gameOver() {
   state = 'over'; overT = 0; fever = false;
+  document.body.classList.remove('playing');
+  const key = practice ? 'practice' : 'normal';
   const newBest = score > best && score > 0;
-  if (score > best) { best = score; try { localStorage.setItem('flyaway-best', best); } catch (e) {} }
+  if (score > best) { best = bests[key] = score; try { localStorage.setItem(BEST_KEY[key], best); } catch (e) {} }
+  ui.overTitle.textContent = practice ? 'PRACTICE OVER' : 'GAME OVER';
+  ui.switchMode.dataset.mode = practice ? 'normal' : 'practice';
+  ui.switchMode.innerHTML = practice ? '<span class="kbd">N · </span>PLAY FOR REAL' : '<span class="kbd">P · </span>PRACTICE';
   ui.newbest.style.display = newBest ? 'block' : 'none';
   if (newBest) { confetti(220); sfx.fever(); }
   ui.stats.innerHTML = [[(P.maxRing || 0) + 1, 'BARS'], [stats.bestCombo, 'BEST COMBO'], [stats.bestFlipName, 'BEST TRICK'], [stats.stars, 'STARS']]
     .map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
   ui.final.textContent = score.toLocaleString();
-  ui.finalbest.textContent = 'BEST ' + best.toLocaleString();
+  ui.finalbest.textContent = (practice ? 'PRACTICE BEST ' : 'BEST ') + best.toLocaleString();
   ui.menu.style.display = 'none'; ui.over.style.display = '';
   ui.overlay.classList.remove('hidden');
 }
@@ -806,7 +831,7 @@ function catchRing(r, th, diff, g, hold) {
   for (const [t, c] of lines) popup(t, c);
   popup('+' + pts.toLocaleString() + (totalMult > 1 ? `  ×${totalMult.toFixed(2).replace(/\.?0+$/, '')}` : ''), 'pts');
   if (r.gold) {
-    if (lives < 5) { lives++; popup('+1 LIFE', 'big'); } else { score += 1000; popup('GOLD +1000', 'big'); }
+    if (!practice && lives < 5) { lives++; popup('+1 LIFE', 'big'); } else { score += 1000; popup('GOLD +1000', 'big'); }
     sfx.life(); burst(rp.x, rp.y, 40, [0xffd23d, 0xffffff], 6, 4);
   }
   if (halfTurns === 0) crowdExcite = Math.min(1.6, crowdExcite + 0.15);
@@ -826,7 +851,7 @@ function land() {
   if (state !== 'play') return;
   if (stuck) { score += 200; popup('STUCK IT! +200', ''); crowdExcite = Math.min(1.6, crowdExcite + 0.4); sfx.cheer(0.3); }
   else popup('INTO THE PIT', 'bad');
-  lives--;
+  if (!practice) lives--;
 }
 function respawn() {
   const r = P.lastRing;
@@ -838,8 +863,9 @@ function respawn() {
 // ================= input =================
 // GRIP is press-to-act: you hang on by default, a press lets go, and a press in the air
 // reaches for the next ring (you stay reaching until you catch, slip, or land).
+function canStart() { return state === 'menu' || (state === 'over' && overT > 0.8); }
 function gripDown() {
-  if (state !== 'play') { if (state === 'menu' || overT > 0.8) startGame(); return; }
+  if (state !== 'play') { if (canStart()) startGame(); return; }
   if (input.grip) return;
   input.grip = true;
   if (P.mode === 'hang') release();
@@ -847,7 +873,7 @@ function gripDown() {
 }
 function gripUp() { input.grip = false; }
 function tuckDown() {
-  if (state !== 'play') { if (state === 'menu' || overT > 0.8) startGame(); return; }
+  if (state !== 'play') { if (canStart()) startGame(); return; }
   input.tuck = true; kick();
 }
 function tuckUp() { input.tuck = false; }
@@ -859,6 +885,9 @@ addEventListener('keydown', e => {
   ac();
   if (GRIP_KEYS.includes(e.code)) { e.preventDefault(); gripDown(); }
   else if (TUCK_KEYS.includes(e.code)) { e.preventDefault(); tuckDown(); }
+  else if (e.code === 'KeyP' && canStart()) startGame(true);
+  else if (e.code === 'KeyN' && canStart()) startGame(false);
+  else if (e.code === 'Escape' && state === 'play' && practice) endPractice();
   else if (e.code === 'KeyM') { muted = !muted; popup(muted ? 'SOUND OFF' : 'SOUND ON', 'small'); }
   else if (e.code === 'KeyH') { assistForced = !(assistForced ?? !tutorialDone); popup(assistForced ? 'AIM ASSIST ON' : 'AIM ASSIST OFF', 'small'); }
 });
@@ -867,8 +896,16 @@ addEventListener('keyup', e => {
   else if (TUCK_KEYS.includes(e.code)) tuckUp();
 });
 const pointerRole = new Map();
+function endPractice() { if (state === 'play' && practice) { input.grip = input.tuck = false; gameOver(); } }
 addEventListener('pointerdown', e => {
   ac();
+  const btn = e.target.closest && e.target.closest('.alt, #endBtn');
+  if (btn) {
+    e.preventDefault();
+    if (btn.id === 'endBtn') endPractice();
+    else if (canStart()) startGame(btn.dataset.mode === 'practice');
+    return;
+  }
   let role;
   if (e.pointerType === 'mouse') role = e.button === 2 ? 'tuck' : 'grip';
   else role = e.clientX < innerWidth / 2 ? 'tuck' : 'grip';
@@ -909,7 +946,7 @@ function updatePlayer(dt) {
     P.ring.theta = P.theta; P.ring.omega = P.omega;
     hangPos();
     P.phi = P.theta;
-    if (state === 'play') {
+    if (state === 'play' && !practice) {
       P.grip -= dt / (P.hold === 'legs' ? GRIP_TIME_LEGS : GRIP_TIME);
       if (P.grip <= 0) { P.grip = 0; release(true); }
     }
