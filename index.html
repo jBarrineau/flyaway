@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>FLYAWAY — Gymnastics Rings Arcade</title>
+<title>FLYAWAY — Flying Trapeze Arcade</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Rubik:wght@500;800&display=swap" rel="stylesheet">
 <style>
@@ -82,7 +82,7 @@
 <div id="flash"></div>
 <div id="hud">
   <div id="left"><div id="score">0</div><div id="combo"></div><div id="stars"></div></div>
-  <div id="right"><div id="lives"></div><div id="best">BEST 0</div><div id="ringno">RING 1</div></div>
+  <div id="right"><div id="lives"></div><div id="best">BEST 0</div><div id="ringno">BAR 1</div></div>
   <div id="hint"></div>
   <div id="gripwrap"><div id="griplabel">GRIP</div><div id="gripbar"><div id="gripfill"></div></div></div>
 </div>
@@ -95,12 +95,12 @@
     <div class="tag">Swing · Release · Flip · Catch</div>
     <div class="controls">
       <div><b>GRIP</b><span><span class="kbd">SPACE · LEFT CLICK</span><span class="tch">RIGHT SIDE OF SCREEN</span></span>
-        <em>You hang on automatically. <strong>Press</strong> to let go and fly. Press again in the air to reach for a ring — you'll catch it and hold on.</em></div>
+        <em>You hang on automatically. <strong>Press</strong> to let go and fly. Press again in the air to reach for the next bar — you'll catch it and hold on.</em></div>
       <div><b>TUCK</b><span><span class="kbd">F · SHIFT · ↓ · RIGHT CLICK</span><span class="tch">LEFT SIDE OF SCREEN</span></span>
         <em><strong>Tap</strong> at the bottom of the swing to pump higher. <strong>Hold</strong> in the air to spin into flips.</em></div>
     </div>
     <p class="tips">Open up from your tuck before you reach — you must be hands-up to catch! Layouts ×1.5 · Perfect catches ×1.5 ·
-      Chain catches for a combo — hit ×5 for <strong>FEVER</strong> (double points!) · Grab ★ stars mid-air · Gold rings give an extra life. Don't run out of grip!</p>
+      Chain catches for a combo — hit ×5 for <strong>FEVER</strong> (double points!) · Grab ★ stars mid-air · Gold bars give an extra life. Don't run out of grip!</p>
     <div class="go"><span class="kbd">PRESS SPACE</span><span class="tch">TAP</span> TO START</div>
   </div>
   <div class="panel" id="overPanel" style="display:none">
@@ -120,13 +120,13 @@ import * as THREE from 'three';
 const G = 22;            // gravity (arcade-strong)
 const HC = 1.0;          // hands -> body center distance
 const CEIL = 13;         // anchor height
-const CATCH_R = 1.0;     // catch radius around ring
+const CATCH_R = 1.0;     // catch radius around the bar
 const THETA_MAX = 1.65;  // max swing amplitude (rad)
 const DAMP = 0.06;
 const GRIP_TIME = 11;    // seconds of hang before grip gives out
 const TUCK_L = 3.5;      // max angular momentum a tuck can build (rad/s at open-body inertia)
 const TUCK_I = 0.3;      // moment of inertia when fully tucked, relative to open body
-const MAGNET = 16;       // pull toward a ring while reaching close to it (m/s^2 at contact)
+const MAGNET = 16;       // pull toward a bar while reaching close to it (m/s^2 at contact)
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -195,7 +195,7 @@ function bannerTex() {
   const grd = g.createLinearGradient(0, 0, 1024, 0); grd.addColorStop(0, '#ff4d6d'); grd.addColorStop(0.5, '#3d7bff'); grd.addColorStop(1, '#ff4d6d');
   g.fillStyle = grd; g.fillRect(0, 0, 1024, 128);
   g.fillStyle = '#fff'; g.font = 'bold 76px Impact, Arial Black, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText('FLYAWAY  ★  RINGS  ★', 512, 68, 990);
+  g.fillText('FLYAWAY  ★  TRAPEZE  ★', 512, 68, 990);
   const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; t.repeat.x = 10; t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 const banner = new THREE.Mesh(new THREE.PlaneGeometry(400, 3.2), new THREE.MeshBasicMaterial({ map: bannerTex(), fog: true }));
@@ -289,8 +289,12 @@ function setPose(hip, knee, sh, el) {
   for (const a of arms) { a.j1.rotation.z = sh; a.j2.rotation.z = el; }
 }
 
-// ================= rings apparatus =================
-const strapMat = new THREE.MeshStandardMaterial({ color: 0x1c1c22, roughness: 0.8 });
+// ================= trapeze apparatus =================
+// (code still calls each trapeze a "ring": r.L is the rope length, ringHand() is the bar's grab point)
+const ropeMat = new THREE.MeshStandardMaterial({ color: 0xe9e1cc, roughness: 0.9 });
+const tapeMat = new THREE.MeshStandardMaterial({ color: 0xf4f4f8, roughness: 0.7 });
+const BAR_W = 0.9;       // bar length (along z, the player's shoulder axis)
+const BAR_TURN = 0.45;   // apparatus turned a little about the rope axis so the bar reads as a bar, not a dot
 const clampMat = new THREE.MeshStandardMaterial({ color: 0x555b6e, metalness: 0.8, roughness: 0.3 });
 let rings = [], genI = 0, genX = 0, prevL = 4.2;
 function addRing() {
@@ -310,13 +314,17 @@ function addRing() {
   const g = new THREE.Group();
   const top = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.25, 0.9), clampMat); top.position.y = 0.2; g.add(top);
   const swing = new THREE.Group(); g.add(swing);
+  const rig = new THREE.Group(); rig.rotation.y = BAR_TURN; swing.add(rig);
   const geos = [];
-  for (const z of [-0.22, 0.22]) {
-    const sg = new THREE.BoxGeometry(0.055, L, 0.025); geos.push(sg);
-    const strap = new THREE.Mesh(sg, strapMat); strap.position.set(0, -L / 2, z); strap.castShadow = true; swing.add(strap);
-    const rg = new THREE.TorusGeometry(0.15, 0.03, 10, 28); geos.push(rg);
-    const ring = new THREE.Mesh(rg, mat); ring.position.set(0, -L - 0.12, z); ring.rotation.y = 0.55; ring.castShadow = true; swing.add(ring);
+  const zr = BAR_W / 2 - 0.03;
+  const rg = new THREE.CylinderGeometry(0.018, 0.018, L, 6); geos.push(rg);
+  for (const z of [-zr, zr]) {
+    const rope = new THREE.Mesh(rg, ropeMat); rope.position.set(0, -L / 2, z); rope.castShadow = true; rig.add(rope);
   }
+  const bg = new THREE.CylinderGeometry(0.045, 0.045, BAR_W, 12); geos.push(bg);
+  const bar = new THREE.Mesh(bg, mat); bar.rotation.x = Math.PI / 2; bar.position.y = -L; bar.castShadow = true; rig.add(bar);
+  const tg = new THREE.CylinderGeometry(0.05, 0.05, 0.5, 12); geos.push(tg); // grip tape where the hands go
+  const tape = new THREE.Mesh(tg, tapeMat); tape.rotation.x = Math.PI / 2; tape.position.y = -L; rig.add(tape);
   scene.add(g);
   const r = { i, x0, L, amp, freq: rand(0.7, 1.3), phase: rand(0, TAU), theta: 0, omega: 0, fumbleT: 0, gold, mat, g, swing, geos };
   rings.push(r);
@@ -530,7 +538,7 @@ const cam = { x: 0, y: 7, vx: 0, shake: 0, punch: 0 };
 const pose = { hip: 0, knee: 0, sh: 0, el: 0 };
 // per-catch visual offsets & springs, reset whenever the player re-attaches to a ring
 const HANG_FX = { handOffX: 0, handOffY: 0, strapOff: 0, stretch: 0, stretchV: 0, visOff: 0, visOffV: 0 };
-// arena color themes, advancing every 10 rings
+// arena color themes, advancing every 10 bars
 const THEMES = [[0x0d1230, 0xa9bcff], [0x1d0d30, 0xd0a9ff], [0x0d2a30, 0x9fffe8], [0x301a0d, 0xffd2a9], [0x300d1c, 0xffa9c8]].map(([b, h]) => [new THREE.Color(b), new THREE.Color(h)]);
 const FEVER_BG = new THREE.Color(0x3a0a4a);
 const hemi = scene.children.find(o => o.isHemisphereLight);
@@ -561,7 +569,7 @@ function gameOver() {
   if (score > best) { best = score; try { localStorage.setItem('flyaway-best', best); } catch (e) {} }
   ui.newbest.style.display = newBest ? 'block' : 'none';
   if (newBest) { confetti(220); sfx.fever(); }
-  ui.stats.innerHTML = [[(P.maxRing || 0) + 1, 'RINGS'], [stats.bestCombo, 'BEST COMBO'], [stats.bestFlipName, 'BEST TRICK'], [stats.stars, 'STARS']]
+  ui.stats.innerHTML = [[(P.maxRing || 0) + 1, 'BARS'], [stats.bestCombo, 'BEST COMBO'], [stats.bestFlipName, 'BEST TRICK'], [stats.stars, 'STARS']]
     .map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
   ui.final.textContent = score.toLocaleString();
   ui.finalbest.textContent = 'BEST ' + best.toLocaleString();
@@ -1041,7 +1049,7 @@ function updateHUD() {
   ui.stars.textContent = starCount ? '★ ' + starCount : '';
   ui.lives.textContent = '♥'.repeat(Math.max(0, lives));
   ui.best.textContent = 'BEST ' + Math.max(best, score).toLocaleString();
-  ui.ringno.textContent = 'RING ' + ((P.lastRing ? P.lastRing.i : 0) + 1);
+  ui.ringno.textContent = 'BAR ' + ((P.lastRing ? P.lastRing.i : 0) + 1);
   ui.grip.style.width = (P.grip * 100).toFixed(1) + '%';
   ui.grip.classList.toggle('low', P.grip < 0.3);
   // hints
@@ -1052,7 +1060,7 @@ function updateHUD() {
       const amp = Math.sqrt(P.theta * P.theta + (P.omega * P.omega) * Le() / G);
       if (amp < 1.0) hint = `Tap TUCK (${T_}) at the bottom of the swing to pump`;
       else hint = `Press GRIP (${G_}) to let go as you swing forward & up!`;
-    } else if (P.mode === 'air') hint = P.reaching ? `Reaching… open up to catch!` : `Press GRIP to reach for a ring · Hold TUCK to flip`;
+    } else if (P.mode === 'air') hint = P.reaching ? `Reaching… open up to catch!` : `Press GRIP to reach for a bar · Hold TUCK to flip`;
   } else if (state === 'play' && P.mode === 'hang' && P.grip < 0.3) hint = 'GRIP SLIPPING — GO!';
   ui.hint.textContent = hint;
   ui.hint.classList.toggle('on', !!hint);
