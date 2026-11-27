@@ -124,6 +124,9 @@ const CATCH_R = 1.0;     // catch radius around ring
 const THETA_MAX = 1.65;  // max swing amplitude (rad)
 const DAMP = 0.06;
 const GRIP_TIME = 11;    // seconds of hang before grip gives out
+const TUCK_L = 3.5;      // max angular momentum a tuck can build (rad/s at open-body inertia)
+const TUCK_I = 0.3;      // moment of inertia when fully tucked, relative to open body
+const MAGNET = 16;       // pull toward a ring while reaching close to it (m/s^2 at contact)
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -320,6 +323,8 @@ function addRing() {
   return r;
 }
 function anchorX(r) { return r.x0 + r.amp * Math.sin(time * r.freq + r.phase); }
+function anchorVX(r) { return r.amp * r.freq * Math.cos(time * r.freq + r.phase); }
+function anchorAX(r) { return -r.amp * r.freq * r.freq * Math.sin(time * r.freq + r.phase); }
 function ringHand(r) { const ax = anchorX(r); return { x: ax + r.L * Math.sin(r.theta), y: CEIL - r.L * Math.cos(r.theta) }; }
 function removeRing(r) { scene.remove(r.g); r.geos.forEach(g => g.dispose()); r.mat.dispose(); }
 
@@ -451,7 +456,7 @@ function tone(f0, f1, dur, vol, type = 'sine') {
 }
 const sfx = {
   whoosh: () => nz(0.4, 'bandpass', 350, 1600, 0.22, 1.4, 0.05),
-  catch: () => { nz(0.07, 'highpass', 2500, 1800, 0.35, 0.7, 0.005); tone(200, 90, 0.15, 0.3); },
+  catch: (v = 0.5) => { nz(0.07, 'highpass', 2500, 1800, 0.2 + 0.3 * v, 0.7, 0.005); tone(200 - 40 * v, 90 - 30 * v, 0.15 + 0.1 * v, 0.18 + 0.25 * v); },
   kick: q => tone(260 + 500 * q, 300 + 600 * q, 0.09, 0.12, 'triangle'),
   flip: n => tone(500 + n * 120, 700 + n * 160, 0.08, 0.07, 'square'),
   cheer: a => nz(1.0 + a, 'bandpass', 1000, 1300, 0.08 + 0.08 * a, 0.5, 0.25),
@@ -521,7 +526,10 @@ let fever = false, starCount = 0, starChain = 0, hitStop = 0, timeScale = 1, slo
 let stats = {};
 const input = { grip: false, tuck: false };
 const P = {};
-const cam = { x: 0, y: 7, shake: 0, punch: 0 };
+const cam = { x: 0, y: 7, vx: 0, shake: 0, punch: 0 };
+const pose = { hip: 0, knee: 0, sh: 0, el: 0 };
+// per-catch visual offsets & springs, reset whenever the player re-attaches to a ring
+const HANG_FX = { handOffX: 0, handOffY: 0, strapOff: 0, stretch: 0, stretchV: 0, visOff: 0, visOffV: 0 };
 // arena color themes, advancing every 10 rings
 const THEMES = [[0x0d1230, 0xa9bcff], [0x1d0d30, 0xd0a9ff], [0x0d2a30, 0x9fffe8], [0x301a0d, 0xffd2a9], [0x300d1c, 0xffa9c8]].map(([b, h]) => [new THREE.Color(b), new THREE.Color(h)]);
 const FEVER_BG = new THREE.Color(0x3a0a4a);
@@ -532,8 +540,8 @@ function resetWorld() {
   clearStars();
   while (genX < 60) addRing();
   Object.assign(P, { mode: 'hang', ring: rings[0], lastRing: rings[0], theta: 0.35, omega: 0, x: 0, y: 0, vx: 0, vy: 0, phi: 0, phiStart: 0,
-    spinBase: 0, tuck: 0, reach: 0, tuckRot: 0, absRot: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, kickPulse: 0, visOff: 0,
-    releasedRing: null, releaseT: 0, landT: 0, flipShown: 0, maxRing: 0 });
+    spinBase: 0, angMom: 0, spin: 0, tuck: 0, reach: 0, tuckRot: 0, absRot: 0, freeRot: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, kickPulse: 0,
+    releasedRing: null, releaseT: 0, landT: 0, flipShown: 0, maxRing: 0, ...HANG_FX });
   hangPos();
   cam.x = P.x + 4; cam.y = 7;
 }
@@ -567,6 +575,24 @@ function hangPos() {
   const ax = anchorX(P.ring), l = Le();
   P.x = ax + l * Math.sin(P.theta); P.y = CEIL - l * Math.cos(P.theta);
 }
+// where the hanging player is actually drawn: ring/strap angle, strap length and hands carry
+// the decaying catch offsets, and the body hangs off the hands at theta + visOff
+function hangVisual() {
+  const r = P.ring, ax = anchorX(r), sa = P.theta + P.strapOff, rl = r.L + P.stretch;
+  const hx = ax + rl * Math.sin(sa) + P.handOffX, hy = CEIL - rl * Math.cos(sa) + P.handOffY;
+  const ang = P.theta + P.visOff;
+  return { sa, rl, hx, hy, ang, bx: hx + HC * Math.sin(ang), by: hy - HC * Math.cos(ang) };
+}
+// body angular velocity in the air: angular momentum over inertia (tucking spins faster),
+// and when open & reaching the body steers itself hands-up
+function airSpin(phi, angMom, tuck, steer) {
+  let spin = angMom / lerp(1, TUCK_I, tuck);
+  if (steer) {
+    const target = Math.round(phi / TAU) * TAU;
+    spin = spin * 0.4 + clamp((target - phi) * 7, -5.5, 5.5);
+  }
+  return spin;
+}
 function capEnergy() {
   const l = Le();
   const pot = G * l * (1 - Math.cos(P.theta));
@@ -592,29 +618,63 @@ function kick(auto = false) {
   }
 }
 function release(forced = false) {
-  const r = P.ring, l = Le();
-  P.vx = P.omega * l * Math.cos(P.theta); P.vy = P.omega * l * Math.sin(P.theta);
-  P.phi = P.theta; P.phiStart = P.theta; P.spinBase = P.omega;
-  P.mode = 'air'; P.reaching = false; P.releasedRing = r; P.releaseT = 0; P.tuckRot = 0; P.absRot = 0; P.flipShown = 0;
-  r.theta = P.theta; r.omega = P.omega * 0.6;
+  const r = P.ring, l = Le(), v = hangVisual();
+  // swing velocity plus the (possibly moving) anchor's velocity
+  P.vx = P.omega * l * Math.cos(P.theta) + anchorVX(r); P.vy = P.omega * l * Math.sin(P.theta);
+  // leave from exactly where the body is drawn so a release right after a catch doesn't pop
+  P.x = v.bx; P.y = v.by;
+  P.phi = v.ang; P.phiStart = v.ang; P.spinBase = P.omega + P.visOffV; P.angMom = P.spinBase * 0.5; P.spin = P.angMom;
+  P.mode = 'air'; P.reaching = false; P.releasedRing = r; P.releaseT = 0; P.tuckRot = 0; P.absRot = 0; P.freeRot = 0; P.flipShown = 0;
+  r.theta = v.sa; r.omega = P.omega * 0.6;
+  Object.assign(P, HANG_FX);
+  for (const q of rings) { q.nearD = Infinity; q.nearShown = false; }
   P.lastRing = r; P.ring = null;
   sfx.whoosh();
   if (forced) popup('GRIP GONE!', 'bad');
 }
-function tryCatch() {
-  const hx = P.x - HC * Math.sin(P.phi), hy = P.y + HC * Math.cos(P.phi);
+function catchable(r) {
+  return !(r === P.releasedRing && P.releaseT < 0.9) && !(r.fumbleT > 0);
+}
+// light assist: when open & reaching near a ring, ease the hands toward it and swing the ring toward the hands
+function magnet(dt) {
+  const hx = P.x - HC * Math.sin(P.phi), hy = P.y + HC * Math.cos(P.phi), zone = CATCH_R * 1.8;
+  let best = null, bd = zone;
   for (const r of rings) {
-    if (r === P.releasedRing && P.releaseT < 0.9) continue;
-    if (r.fumbleT > 0) continue;
+    if (!catchable(r)) continue;
+    const rp = ringHand(r), d = Math.hypot(hx - rp.x, hy - rp.y);
+    if (d < bd) { bd = d; best = r; }
+  }
+  if (!best || bd < 0.05) return;
+  const rp = ringHand(best), f = 1 - bd / zone;
+  P.vx += (rp.x - hx) / bd * MAGNET * f * dt; P.vy += (rp.y - hy) / bd * MAGNET * f * dt;
+  const ta = Math.atan2(hx - anchorX(best), CEIL - hy);
+  best.omega += clamp(wrap(ta - best.theta), -0.5, 0.5) * 40 * f * dt;
+}
+// px,py: hand position at the start of this frame — the hand's whole path is tested, not just its end point
+function tryCatch(px, py) {
+  const hx1 = P.x - HC * Math.sin(P.phi), hy1 = P.y + HC * Math.cos(P.phi);
+  const sx = hx1 - px, sy = hy1 - py, ss = sx * sx + sy * sy;
+  const open = P.reach > 0.6 && P.tuck < 0.5; // must be opened up with hands up
+  const nextI = P.lastRing ? P.lastRing.i : -1;
+  for (const r of rings) {
+    if (!catchable(r)) continue;
     const rp = ringHand(r);
-    if (Math.hypot(hx - rp.x, hy - rp.y) < CATCH_R) {
-      const ax = anchorX(r);
-      const th = Math.atan2(hx - ax, CEIL - hy);
+    const u = ss > 1e-6 ? clamp(((rp.x - px) * sx + (rp.y - py) * sy) / ss, 0, 1) : 1;
+    const hx = px + sx * u, hy = py + sy * u;
+    const d = Math.hypot(hx - rp.x, hy - rp.y);
+    if (d < CATCH_R) {
+      const ahead = r.i > nextI;
+      if (!open) { if (ahead && !r.nearShown) { r.nearShown = true; popup('OPEN UP!', 'small'); } continue; }
+      const th = Math.atan2(hx - anchorX(r), CEIL - hy);
       const diff = wrap(P.phi - th);
-      if (Math.abs(diff) < 1.25) { catchRing(r, th, diff); return; }
+      if (Math.abs(diff) < 1.25) { catchRing(r, th, diff, hx1, hy1); return; }
       if (Math.abs(diff) > 2.4) { fumble(r); return; } // upside-down grab: slip
       // otherwise keep reaching — you might rotate into it
-
+      if (ahead && !r.nearShown) { r.nearShown = true; popup('HANDS UP!', 'small'); }
+    } else if (r.i > nextI) {
+      // near-miss: closest approach was just outside the catch radius and we're now moving away
+      if (d < (r.nearD ?? Infinity)) r.nearD = d;
+      else if (!r.nearShown && r.nearD < CATCH_R * 1.6 && d > r.nearD + 0.25) { r.nearShown = true; popup('SO CLOSE!', 'small'); }
     }
   }
 }
@@ -625,23 +685,35 @@ function fumble(r) {
 }
 const FLIP_NAMES = ['', 'FLIP', 'DOUBLE', 'TRIPLE', 'QUAD', 'QUINT'];
 const FLIP_PTS = [0, 300, 800, 1500, 2500, 4000];
-function catchRing(r, th, diff) {
-  const l = r.L + HC;
-  const tang = P.vx * Math.cos(th) + P.vy * Math.sin(th);
+// hx,hy: where the hands are drawn right now (the visual start point of the grab)
+function catchRing(r, th, diff, hx, hy) {
+  const l = r.L + HC, ax = anchorX(r);
+  // velocity relative to the (possibly moving) anchor, split along the swing arc and along the strap
+  const rvx = P.vx - anchorVX(r), rvy = P.vy;
+  const tang = rvx * Math.cos(th) + rvy * Math.sin(th);
+  const radial = rvx * Math.sin(th) - rvy * Math.cos(th); // + = flying away from the anchor: yanks the strap
+  const impact = clamp((Math.max(radial, 0) + 0.4 * Math.max(-radial, 0)) / 9, 0, 1);
   const k = Math.round((P.phi - th) / TAU);
-  const tuckFrac = P.tuckRot / Math.max(P.absRot, 0.001);
+  const tuckFrac = P.tuckRot / Math.max(P.freeRot, 0.001);
   const from = P.lastRing;
   const gripAtCatch = P.grip;
+
+  // visual continuity: strap and hands start where they were drawn and ease onto the new hang pose
+  P.strapOff = wrap(r.theta - th);
+  P.handOffX = hx - (ax + r.L * Math.sin(r.theta)); P.handOffY = hy - (CEIL - r.L * Math.cos(r.theta));
+  P.stretch = 0; P.stretchV = 3.5 * impact;
 
   P.mode = 'hang'; P.reaching = false; P.ring = r; P.theta = th; P.omega = clamp(tang / l, -7, 7);
   capEnergy();
   P.visOff = P.phi - th - k * TAU;
+  P.visOffV = clamp(P.spin - P.omega, -10, 10); // body swings through the catch instead of locking rigid
   if (from && r.i > from.i) P.grip = 1; P.kickUsed = Math.abs(th) < 0.6; P.kickDir = Math.sign(P.omega);
   P.lastRing = r; r.fumbleT = 0;
   hangPos();
-  sfx.catch();
-  const rp = ringHand(r); burst(rp.x, rp.y, 22, [0xffffff, 0xe8eeff], 3.5, 3);
-  cam.punch = Math.max(cam.punch, 0.5);
+  sfx.catch(impact);
+  const rp = ringHand(r); burst(rp.x, rp.y, Math.round(14 + 20 * impact), [0xffffff, 0xe8eeff], 2.5 + 2 * impact, 3);
+  cam.punch = Math.max(cam.punch, 0.3 + 0.4 * impact);
+  cam.shake = Math.max(cam.shake, 0.04 + 0.22 * impact);
 
   if (!from || r.i <= from.i) { popup('REGRIP', 'small'); return; }
 
@@ -704,7 +776,7 @@ function land() {
 }
 function respawn() {
   const r = P.lastRing;
-  Object.assign(P, { mode: 'hang', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, visOff: 0, tuck: 0, reach: 0 });
+  Object.assign(P, { mode: 'hang', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, tuck: 0, reach: 0, ...HANG_FX });
   r.fumbleT = 0;
   hangPos();
 }
@@ -764,11 +836,17 @@ addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); ca
 // ================= update =================
 function updatePlayer(dt) {
   if (P.mode === 'hang') {
-    const l = Le(), n = 4, h = dt / n;
+    const l = Le(), n = 4, h = dt / n, aax = anchorAX(P.ring);
     for (let s = 0; s < n; s++) {
-      const a = -(G / l) * Math.sin(P.theta) - DAMP * P.omega;
+      // a sliding anchor drives the swing (pseudo-force in the anchor's frame)
+      const a = -(G / l) * Math.sin(P.theta) - (aax / l) * Math.cos(P.theta) - DAMP * P.omega;
       P.omega += a * h; P.theta += P.omega * h;
     }
+    // catch offsets ease out; body swing-through and strap stretch are damped springs
+    const dk = Math.exp(-12 * dt);
+    P.handOffX *= dk; P.handOffY *= dk; P.strapOff *= dk;
+    P.visOffV += (-140 * P.visOff - 13 * P.visOffV) * dt; P.visOff += P.visOffV * dt;
+    P.stretchV += (-260 * P.stretch - 14 * P.stretchV) * dt; P.stretch += P.stretchV * dt;
     capEnergy();
     // unlock the kick once the swing leaves the bottom window OR turns around —
     // small swings never leave the window, so without the turn check TUCK would lock up
@@ -777,7 +855,6 @@ function updatePlayer(dt) {
     P.ring.theta = P.theta; P.ring.omega = P.omega;
     hangPos();
     P.phi = P.theta;
-    P.visOff *= Math.exp(-9 * dt);
     if (state === 'play') {
       P.grip -= dt / GRIP_TIME;
       if (P.grip <= 0) { P.grip = 0; release(true); }
@@ -786,19 +863,23 @@ function updatePlayer(dt) {
     P.releaseT += dt;
     P.tuck += ((input.tuck ? 1 : 0) - P.tuck) * Math.min(1, dt * 12);
     P.reach += ((P.reaching ? 1 : 0) - P.reach) * Math.min(1, dt * 14);
-    let spin = P.spinBase * 0.5 + (Math.sign(P.spinBase) || 1) * 10 * P.tuck; // arcade tuck spin
-    if (P.reaching && P.tuck < 0.5) { // open up & reach: body steers to hands-up
-      const target = Math.round(P.phi / TAU) * TAU;
-      spin = spin * 0.4 + clamp((target - P.phi) * 7, -5.5, 5.5);
-    }
+    const hx0 = P.x - HC * Math.sin(P.phi), hy0 = P.y + HC * Math.cos(P.phi);
+    // holding a tuck builds angular momentum; opening up raises inertia so the spin slows naturally
+    const sdir = Math.sign(P.spinBase) || 1;
+    if (input.tuck) P.angMom = sdir * Math.min(TUCK_L, sdir * P.angMom + 12 * dt);
+    const steer = P.reaching && P.tuck < 0.5; // open up & reach: body steers to hands-up
+    if (steer) P.angMom *= Math.exp(-2.5 * dt);
+    const spin = P.spin = airSpin(P.phi, P.angMom, P.tuck, steer);
     const dphi = spin * dt;
-    P.phi += dphi; P.absRot += Math.abs(dphi); P.tuckRot += Math.abs(dphi) * P.tuck;
+    P.phi += dphi; P.absRot += Math.abs(dphi);
+    if (!steer) { P.freeRot += Math.abs(dphi); P.tuckRot += Math.abs(dphi) * P.tuck; }
+    if (steer && P.releaseT > 0.1) magnet(dt);
     P.vy -= G * dt; P.x += P.vx * dt; P.y += P.vy * dt;
     // live flip counter
     const rel = Math.abs(P.phi - P.phiStart);
     const shown = Math.floor((rel + 1.2) / TAU);
     if (shown > P.flipShown) { P.flipShown = shown; popup(shown + '×', 'small'); sfx.flip(shown); }
-    if (P.reaching && P.releaseT > 0.1) tryCatch();
+    if (P.reaching && P.releaseT > 0.1) tryCatch(hx0, hy0);
     // motion trail (rainbow in fever)
     const tc = fever ? PARTY[Math.floor(time * 20) % PARTY.length] : (P.tuck > 0.5 ? 0xffd23d : 0x9fc0ff);
     for (let k = 0; k < (fever ? 3 : 2); k++)
@@ -829,10 +910,12 @@ function updateRings(dt) {
     }
     if (r !== P.ring) {
       const n = 3, h = dt / n;
-      for (let s = 0; s < n; s++) { const a = -(G / r.L) * Math.sin(r.theta) - 0.9 * r.omega; r.omega += a * h; r.theta += r.omega * h; }
+      const aax = anchorAX(r);
+      for (let s = 0; s < n; s++) { const a = -(G / r.L) * Math.sin(r.theta) - (aax / r.L) * Math.cos(r.theta) - 0.9 * r.omega; r.omega += a * h; r.theta += r.omega * h; }
     }
     r.g.position.set(anchorX(r), CEIL, 0);
-    r.swing.rotation.z = r.theta;
+    if (r === P.ring && P.mode === 'hang') { const v = hangVisual(); r.swing.rotation.z = v.sa; r.swing.scale.y = v.rl / r.L; }
+    else { r.swing.rotation.z = r.theta; r.swing.scale.y = 1; }
     // highlight
     let glow = 0;
     if (state !== 'over' && P.lastRing && r.i === P.lastRing.i + 1) glow = 0.35 + 0.25 * Math.sin(time * 7);
@@ -882,14 +965,17 @@ function updateTrajectory() {
   const on = (assistForced ?? !tutorialDone) && P.mode === 'hang' && P.omega > 0.8 && P.theta > -0.3;
   traj.visible = on;
   if (!on) return;
-  const l = Le();
-  let x = P.x, y = P.y, vx = P.omega * l * Math.cos(P.theta), vy = P.omega * l * Math.sin(P.theta), phi = P.theta;
+  // same flight model as updatePlayer, assuming GRIP is pressed to reach right after letting go
+  const l = Le(), v = hangVisual();
+  let x = v.bx, y = v.by, vx = P.omega * l * Math.cos(P.theta) + anchorVX(P.ring), vy = P.omega * l * Math.sin(P.theta), phi = v.ang;
+  let angMom = (P.omega + P.visOffV) * 0.5, t = 0;
   const h = 0.05;
   for (let i = 0; i < TN; i++) {
     for (let s = 0; s < 2; s++) {
-      const target = Math.round(phi / TAU) * TAU;
-      phi += (P.omega * 0.5 * 0.4 + clamp((target - phi) * 7, -5.5, 5.5)) * h;
-      vy -= G * h; x += vx * h; y += vy * h;
+      const steer = t > 0.1;
+      if (steer) angMom *= Math.exp(-2.5 * h);
+      phi += airSpin(phi, angMom, 0, steer) * h;
+      vy -= G * h; x += vx * h; y += vy * h; t += h;
     }
     const hx = x - HC * Math.sin(phi), hy = y + HC * Math.cos(phi);
     tPos[i * 3] = hx; tPos[i * 3 + 1] = y < 1.4 ? -99 : hy; tPos[i * 3 + 2] = 0;
@@ -898,29 +984,33 @@ function updateTrajectory() {
 }
 
 function renderPlayer(dt) {
-  let cx = P.x, cy = P.y, ang = P.phi;
+  let cx = P.x, cy = P.y, ang = P.phi, tgt;
   if (P.mode === 'hang') {
-    const ax = anchorX(P.ring);
-    const hx = ax + P.ring.L * Math.sin(P.theta), hy = CEIL - P.ring.L * Math.cos(P.theta);
-    ang = P.theta + P.visOff;
-    cx = hx + HC * Math.sin(ang); cy = hy - HC * Math.cos(ang);
+    const v = hangVisual();
+    ang = v.ang; cx = v.bx; cy = v.by;
     P.kickPulse *= Math.exp(-5 * dt);
-    const trail = clamp(-0.14 * P.omega, -0.5, 0.5);
-    setPose(trail + 1.3 * P.kickPulse, -0.15 - 0.5 * P.kickPulse, 0, 0);
+    // legs trail the swing and also lag the body's swing-through after a catch
+    const trail = clamp(-0.14 * P.omega - 0.06 * P.visOffV, -0.6, 0.6);
+    tgt = [trail + 1.3 * P.kickPulse, -0.15 - 0.5 * P.kickPulse - 0.4 * P.stretch, 0, 0];
   } else if (P.mode === 'air') {
     const t = P.tuck, r = P.reach;
-    const sh = lerp(-0.9 - 1.3 * t, 0, r), el = lerp(-0.3 - 0.6 * t, 0, r);
-    setPose(0.15 + 2.3 * t, -0.1 - 2.4 * t, sh, el);
+    tgt = [0.15 + 2.3 * t, -0.1 - 2.4 * t, lerp(-0.9 - 1.3 * t, 0, r), lerp(-0.3 - 0.6 * t, 0, r)];
   } else {
-    setPose(0.7, -0.9, -1.2, -0.4);
+    tgt = [0.7, -0.9, -1.2, -0.4];
   }
+  // blend toward the target pose so mode changes (release, catch, landing) don't pop
+  const pk = Math.min(1, dt * 18);
+  pose.hip = lerp(pose.hip, tgt[0], pk); pose.knee = lerp(pose.knee, tgt[1], pk);
+  pose.sh = lerp(pose.sh, tgt[2], pk); pose.el = lerp(pose.el, tgt[3], pk);
+  setPose(pose.hip, pose.knee, pose.sh, pose.el);
   gym.position.set(cx, cy, 0);
   gym.rotation.set(0, 0, ang);
 }
 
 function updateCamera(dt) {
-  const vx = P.mode === 'air' ? P.vx : 0;
-  const tx = P.x + 3.5 + clamp(vx * 0.25, -2, 3);
+  // look-ahead eases out after a catch instead of snapping back
+  cam.vx += ((P.mode === 'air' ? P.vx : 0) - cam.vx) * Math.min(1, dt * 1.8);
+  const tx = P.x + 3.5 + clamp(cam.vx * 0.25, -2, 3);
   const ty = clamp(P.y * 0.3 + 5.2, 6.4, 8.6);
   cam.x += (tx - cam.x) * Math.min(1, dt * 2.6);
   cam.y += (ty - cam.y) * Math.min(1, dt * 2.2);
