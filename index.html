@@ -99,7 +99,7 @@
       <div><b>TUCK</b><span><span class="kbd">F · SHIFT · ↓ · RIGHT CLICK</span><span class="tch">LEFT SIDE OF SCREEN</span></span>
         <em><strong>Tap</strong> at the bottom of the swing to pump higher. <strong>Hold</strong> in the air to spin into flips.</em></div>
     </div>
-    <p class="tips">Open up from your tuck before you reach — you must be hands-up to catch! Layouts ×1.5 · Perfect catches ×1.5 ·
+    <p class="tips">Catch with your <strong>hands</strong> when you're upright (open up from your tuck first), or hook the bar with your <strong>knees</strong> when you're upside-down — knee hangs score a bonus but your grip tires faster. Layouts ×1.5 · Perfect catches ×1.5 ·
       Chain catches for a combo — hit ×5 for <strong>FEVER</strong> (double points!) · Grab ★ stars mid-air · Gold bars give an extra life. Don't run out of grip!</p>
     <div class="go"><span class="kbd">PRESS SPACE</span><span class="tch">TAP</span> TO START</div>
   </div>
@@ -119,6 +119,10 @@ import * as THREE from 'three';
 // ================= constants & utils =================
 const G = 22;            // gravity (arcade-strong)
 const HC = 1.0;          // hands -> body center distance
+const KC = 0.62;         // knees -> body center distance (knee hang)
+const CATCH_R_LEGS = 0.8;// knee-catch radius (a little stricter than hands)
+const LEG_WIN = 0.9;     // how far from straight upside-down a knee catch still hooks (rad)
+const GRIP_TIME_LEGS = 7;// a knee hang tires faster than hands
 const CEIL = 13;         // anchor height
 const CATCH_R = 1.0;     // catch radius around the bar
 const THETA_MAX = 1.65;  // max swing amplitude (rad)
@@ -537,7 +541,7 @@ const P = {};
 const cam = { x: 0, y: 7, vx: 0, shake: 0, punch: 0 };
 const pose = { hip: 0, knee: 0, sh: 0, el: 0 };
 // per-catch visual offsets & springs, reset whenever the player re-attaches to a ring
-const HANG_FX = { handOffX: 0, handOffY: 0, strapOff: 0, stretch: 0, stretchV: 0, visOff: 0, visOffV: 0 };
+const HANG_FX = { grabOffX: 0, grabOffY: 0, strapOff: 0, stretch: 0, stretchV: 0, visOff: 0, visOffV: 0 };
 // arena color themes, advancing every 10 bars
 const THEMES = [[0x0d1230, 0xa9bcff], [0x1d0d30, 0xd0a9ff], [0x0d2a30, 0x9fffe8], [0x301a0d, 0xffd2a9], [0x300d1c, 0xffa9c8]].map(([b, h]) => [new THREE.Color(b), new THREE.Color(h)]);
 const FEVER_BG = new THREE.Color(0x3a0a4a);
@@ -547,7 +551,7 @@ function resetWorld() {
   rings.forEach(removeRing); rings = []; genI = 0; genX = 0; prevL = 4.2;
   clearStars();
   while (genX < 60) addRing();
-  Object.assign(P, { mode: 'hang', ring: rings[0], lastRing: rings[0], theta: 0.35, omega: 0, x: 0, y: 0, vx: 0, vy: 0, phi: 0, phiStart: 0,
+  Object.assign(P, { mode: 'hang', hold: 'hands', ring: rings[0], lastRing: rings[0], theta: 0.35, omega: 0, x: 0, y: 0, vx: 0, vy: 0, phi: 0, phiStart: 0,
     spinBase: 0, angMom: 0, spin: 0, tuck: 0, reach: 0, tuckRot: 0, absRot: 0, freeRot: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, kickPulse: 0,
     releasedRing: null, releaseT: 0, landT: 0, flipShown: 0, maxRing: 0, ...HANG_FX });
   hangPos();
@@ -578,25 +582,35 @@ function gameOver() {
 }
 
 // ---------- physics helpers ----------
-function Le() { return P.ring.L + HC; }
+// P.hold: 'hands' (hanging upright from the hands) or 'legs' (upside-down knee hang)
+function gripDist() { return P.hold === 'legs' ? KC : HC; }
+function Le() { return P.ring.L + gripDist(); }
 function hangPos() {
   const ax = anchorX(P.ring), l = Le();
   P.x = ax + l * Math.sin(P.theta); P.y = CEIL - l * Math.cos(P.theta);
 }
-// where the hanging player is actually drawn: ring/strap angle, strap length and hands carry
-// the decaying catch offsets, and the body hangs off the hands at theta + visOff
+// grab points in the air: hands are HC above the body center along the body axis, knees KC below it
+function handPt(x = P.x, y = P.y, phi = P.phi) { return { x: x - HC * Math.sin(phi), y: y + HC * Math.cos(phi) }; }
+function kneePt(x = P.x, y = P.y, phi = P.phi) { return { x: x + KC * Math.sin(phi), y: y - KC * Math.cos(phi) }; }
+// feet nearer the sky than the head: reaching now goes for a knee catch
+function legsUp(phi) { return Math.abs(wrap(phi - Math.PI)) < Math.PI / 2; }
+// where the hanging player is actually drawn: bar/rope angle, rope length and the grab point carry
+// the decaying catch offsets, and the body hangs off the grab point at theta + visOff
+// (a knee hang is the same pendulum with a shorter arm, drawn upside-down)
 function hangVisual() {
   const r = P.ring, ax = anchorX(r), sa = P.theta + P.strapOff, rl = r.L + P.stretch;
-  const hx = ax + rl * Math.sin(sa) + P.handOffX, hy = CEIL - rl * Math.cos(sa) + P.handOffY;
-  const ang = P.theta + P.visOff;
-  return { sa, rl, hx, hy, ang, bx: hx + HC * Math.sin(ang), by: hy - HC * Math.cos(ang) };
+  const hx = ax + rl * Math.sin(sa) + P.grabOffX, hy = CEIL - rl * Math.cos(sa) + P.grabOffY;
+  const a = P.theta + P.visOff, c = gripDist();
+  const ang = a + (P.hold === 'legs' ? Math.PI : 0);
+  return { sa, rl, hx, hy, ang, bx: hx + c * Math.sin(a), by: hy - c * Math.cos(a) };
 }
 // body angular velocity in the air: angular momentum over inertia (tucking spins faster),
-// and when open & reaching the body steers itself hands-up
+// and when open & reaching the body steers itself to the nearest catch orientation:
+// hands-up or (to hook with the knees) feet-up
 function airSpin(phi, angMom, tuck, steer) {
   let spin = angMom / lerp(1, TUCK_I, tuck);
   if (steer) {
-    const target = Math.round(phi / TAU) * TAU;
+    const target = Math.round(phi / Math.PI) * Math.PI;
     spin = spin * 0.4 + clamp((target - phi) * 7, -5.5, 5.5);
   }
   return spin;
@@ -643,43 +657,60 @@ function release(forced = false) {
 function catchable(r) {
   return !(r === P.releasedRing && P.releaseT < 0.9) && !(r.fumbleT > 0);
 }
-// light assist: when open & reaching near a ring, ease the hands toward it and swing the ring toward the hands
+// light assist: when open & reaching near a bar, ease the leading grab point (hands, or knees when
+// feet-up) toward it and swing the bar toward that point
 function magnet(dt) {
-  const hx = P.x - HC * Math.sin(P.phi), hy = P.y + HC * Math.cos(P.phi), zone = CATCH_R * 1.8;
+  const g = legsUp(P.phi) ? kneePt() : handPt(), zone = (legsUp(P.phi) ? CATCH_R_LEGS : CATCH_R) * 1.8;
   let best = null, bd = zone;
   for (const r of rings) {
     if (!catchable(r)) continue;
-    const rp = ringHand(r), d = Math.hypot(hx - rp.x, hy - rp.y);
+    const rp = ringHand(r), d = Math.hypot(g.x - rp.x, g.y - rp.y);
     if (d < bd) { bd = d; best = r; }
   }
   if (!best || bd < 0.05) return;
   const rp = ringHand(best), f = 1 - bd / zone;
-  P.vx += (rp.x - hx) / bd * MAGNET * f * dt; P.vy += (rp.y - hy) / bd * MAGNET * f * dt;
-  const ta = Math.atan2(hx - anchorX(best), CEIL - hy);
+  P.vx += (rp.x - g.x) / bd * MAGNET * f * dt; P.vy += (rp.y - g.y) / bd * MAGNET * f * dt;
+  const ta = Math.atan2(g.x - anchorX(best), CEIL - g.y);
   best.omega += clamp(wrap(ta - best.theta), -0.5, 0.5) * 40 * f * dt;
 }
-// px,py: hand position at the start of this frame — the hand's whole path is tested, not just its end point
-function tryCatch(px, py) {
-  const hx1 = P.x - HC * Math.sin(P.phi), hy1 = P.y + HC * Math.cos(P.phi);
-  const sx = hx1 - px, sy = hy1 - py, ss = sx * sx + sy * sy;
-  const open = P.reach > 0.6 && P.tuck < 0.5; // must be opened up with hands up
+// closest point to q on the segment a->b, and its distance
+function sweep(a, b, q) {
+  const sx = b.x - a.x, sy = b.y - a.y, ss = sx * sx + sy * sy;
+  const u = ss > 1e-6 ? clamp(((q.x - a.x) * sx + (q.y - a.y) * sy) / ss, 0, 1) : 1;
+  const x = a.x + sx * u, y = a.y + sy * u;
+  return { x, y, d: Math.hypot(x - q.x, y - q.y) };
+}
+// x0,y0,phi0: body state at the start of this frame — the hands' and knees' whole paths are tested
+function tryCatch(x0, y0, phi0) {
+  const h0 = handPt(x0, y0, phi0), h1 = handPt(), k0 = kneePt(x0, y0, phi0), k1 = kneePt();
+  const open = P.reach > 0.6 && P.tuck < 0.5; // hands: must be opened up with hands up
+  const reachingNow = P.reach > 0.6;          // knees: hook whether tucked or not
   const nextI = P.lastRing ? P.lastRing.i : -1;
   for (const r of rings) {
     if (!catchable(r)) continue;
-    const rp = ringHand(r);
-    const u = ss > 1e-6 ? clamp(((rp.x - px) * sx + (rp.y - py) * sy) / ss, 0, 1) : 1;
-    const hx = px + sx * u, hy = py + sy * u;
-    const d = Math.hypot(hx - rp.x, hy - rp.y);
-    if (d < CATCH_R) {
-      const ahead = r.i > nextI;
-      if (!open) { if (ahead && !r.nearShown) { r.nearShown = true; popup('OPEN UP!', 'small'); } continue; }
-      const th = Math.atan2(hx - anchorX(r), CEIL - hy);
-      const diff = wrap(P.phi - th);
-      if (Math.abs(diff) < 1.25) { catchRing(r, th, diff, hx1, hy1); return; }
-      if (Math.abs(diff) > 2.4) { fumble(r); return; } // upside-down grab: slip
-      // otherwise keep reaching — you might rotate into it
+    const rp = ringHand(r), ax = anchorX(r), ahead = r.i > nextI;
+    const h = sweep(h0, h1, rp), k = sweep(k0, k1, rp);
+    let hDiff = 0;
+    if (h.d < CATCH_R) {
+      const th = Math.atan2(h.x - ax, CEIL - h.y);
+      hDiff = wrap(P.phi - th);
+      if (Math.abs(hDiff) < 1.25) {
+        if (open) { catchRing(r, th, hDiff, h1, 'hands'); return; }
+        if (ahead && !r.nearShown) { r.nearShown = true; popup('OPEN UP!', 'small'); }
+        continue;
+      }
+    }
+    if (k.d < CATCH_R_LEGS && reachingNow) {
+      const th = Math.atan2(k.x - ax, CEIL - k.y);
+      const diff = wrap(P.phi - th - Math.PI);
+      if (Math.abs(diff) < LEG_WIN) { catchRing(r, th, diff, k1, 'legs'); return; }
+      if (Math.abs(diff) < LEG_WIN + 0.5 && k.d < CATCH_R_LEGS * 0.6) { fumble(r); return; } // knees hit it too crooked to hook: slip
+    }
+    const d = Math.min(h.d, k.d);
+    if (h.d < CATCH_R && Math.abs(hDiff) < 2.4) {
+      // otherwise keep reaching — you might rotate into it (hands brushing a bar below you just pass it)
       if (ahead && !r.nearShown) { r.nearShown = true; popup('HANDS UP!', 'small'); }
-    } else if (r.i > nextI) {
+    } else if (ahead) {
       // near-miss: closest approach was just outside the catch radius and we're now moving away
       if (d < (r.nearD ?? Infinity)) r.nearD = d;
       else if (!r.nearShown && r.nearD < CATCH_R * 1.6 && d > r.nearD + 0.25) { r.nearShown = true; popup('SO CLOSE!', 'small'); }
@@ -693,27 +724,43 @@ function fumble(r) {
 }
 const FLIP_NAMES = ['', 'FLIP', 'DOUBLE', 'TRIPLE', 'QUAD', 'QUINT'];
 const FLIP_PTS = [0, 300, 800, 1500, 2500, 4000];
-// hx,hy: where the hands are drawn right now (the visual start point of the grab)
-function catchRing(r, th, diff, hx, hy) {
-  const l = r.L + HC, ax = anchorX(r);
+const KNEE_PTS = 200;
+// rotation from release to catch, counted in half-turns (a knee catch after a hands release is an odd number)
+function trickName(halfTurns, back) {
+  const n = Math.floor(halfTurns / 2), half = halfTurns % 2 === 1;
+  const dir = back ? 'BACK' : 'FRONT';
+  if (!half) return n === 1 ? dir + ' FLIP' : (n < FLIP_NAMES.length ? FLIP_NAMES[n] : n + 'X') + ' ' + dir;
+  return n === 0 ? 'HALF TURN' : `${n}½ ${dir}`;
+}
+function trickPts(halfTurns) {
+  const n = Math.floor(halfTurns / 2), top = FLIP_PTS.length - 1;
+  const p = i => i <= top ? FLIP_PTS[i] : FLIP_PTS[top] + (i - top) * 1500;
+  return halfTurns % 2 ? Math.round((p(n) + p(n + 1)) / 2) : p(n);
+}
+// g: where the grab point (hands or knees) is drawn right now — the visual start point of the grab
+function catchRing(r, th, diff, g, hold) {
+  const legs = hold === 'legs', hx = g.x, hy = g.y;
+  const l = r.L + (legs ? KC : HC), ax = anchorX(r);
   // velocity relative to the (possibly moving) anchor, split along the swing arc and along the strap
   const rvx = P.vx - anchorVX(r), rvy = P.vy;
   const tang = rvx * Math.cos(th) + rvy * Math.sin(th);
   const radial = rvx * Math.sin(th) - rvy * Math.cos(th); // + = flying away from the anchor: yanks the strap
   const impact = clamp((Math.max(radial, 0) + 0.4 * Math.max(-radial, 0)) / 9, 0, 1);
-  const k = Math.round((P.phi - th) / TAU);
+  // the settled body angle this catch ends in (upright for hands, inverted for knees), nearest the current spin
+  const base = th + (legs ? Math.PI : 0), k = Math.round((P.phi - base) / TAU), settled = base + k * TAU;
+  const turn = settled - P.phiStart, halfTurns = Math.round(Math.abs(turn) / Math.PI);
   const tuckFrac = P.tuckRot / Math.max(P.freeRot, 0.001);
   const from = P.lastRing;
   const gripAtCatch = P.grip;
 
   // visual continuity: strap and hands start where they were drawn and ease onto the new hang pose
   P.strapOff = wrap(r.theta - th);
-  P.handOffX = hx - (ax + r.L * Math.sin(r.theta)); P.handOffY = hy - (CEIL - r.L * Math.cos(r.theta));
+  P.grabOffX = hx - (ax + r.L * Math.sin(r.theta)); P.grabOffY = hy - (CEIL - r.L * Math.cos(r.theta));
   P.stretch = 0; P.stretchV = 3.5 * impact;
 
-  P.mode = 'hang'; P.reaching = false; P.ring = r; P.theta = th; P.omega = clamp(tang / l, -7, 7);
+  P.mode = 'hang'; P.hold = hold; P.reaching = false; P.ring = r; P.theta = th; P.omega = clamp(tang / l, -7, 7);
   capEnergy();
-  P.visOff = P.phi - th - k * TAU;
+  P.visOff = P.phi - settled;
   P.visOffV = clamp(P.spin - P.omega, -10, 10); // body swings through the catch instead of locking rigid
   if (from && r.i > from.i) P.grip = 1; P.kickUsed = Math.abs(th) < 0.6; P.kickDir = Math.sign(P.omega);
   P.lastRing = r; r.fumbleT = 0;
@@ -731,21 +778,20 @@ function catchRing(r, th, diff, hx, hy) {
   stats.bestCombo = Math.max(stats.bestCombo || 0, combo);
   const mult = Math.min(5, 1 + 0.25 * (combo - 1));
   let pts = 100 * advanced, lines = [];
-  const n = Math.abs(k);
-  if (n > 0) { hitStop = 0.07 + 0.05 * Math.min(n, 3); cam.shake = Math.max(cam.shake, 0.12 + 0.1 * n); cam.punch = 1; }
-  if (n >= 2) { popup(pick(HYPE), 'big'); cameraFlashes(10 + n * 8); flashScreen(0.18); }
-  if (n >= 3) confetti(90 + n * 30);
-  if (n > 0) {
-    const nm = n < FLIP_NAMES.length ? FLIP_NAMES[n] : n + 'X';
+  const n = halfTurns / 2; // flips, counting a half-turn as half a flip
+  if (n >= 1) { hitStop = 0.07 + 0.05 * Math.min(n, 3); cam.shake = Math.max(cam.shake, 0.12 + 0.1 * n); cam.punch = 1; }
+  if (n >= 2) { popup(pick(HYPE), 'big'); cameraFlashes(Math.round(10 + n * 8)); flashScreen(0.18); }
+  if (n >= 3) confetti(Math.round(90 + n * 30));
+  if (halfTurns > 0) {
     const layout = tuckFrac < 0.3;
-    const dir = k > 0 ? (n === 1 ? 'BACK ' : ' BACK') : (n === 1 ? 'FRONT ' : ' FRONT');
-    const name = n === 1 ? (dir + 'FLIP') : (nm + dir);
-    let tp = FLIP_PTS[Math.min(n, FLIP_PTS.length - 1)];
-    if (layout) { tp *= 1.5; lines.push(['LAYOUT ' + name.trim() + '!', 'big']); } else lines.push(['TUCKED ' + name.trim() + '!', 'big']);
+    const name = trickName(halfTurns, turn > 0);
+    let tp = trickPts(halfTurns);
+    if (layout) { tp *= 1.5; lines.push(['LAYOUT ' + name + '!', 'big']); } else lines.push(['TUCKED ' + name + '!', halfTurns > 1 ? 'big' : '']);
     pts += tp;
-    if (tp > stats.bestFlip) { stats.bestFlip = tp; stats.bestFlipName = (layout ? 'LAYOUT ' : '') + (n === 1 ? 'FLIP' : nm); }
-    crowdExcite = Math.min(1.6, crowdExcite + 0.5 + n * 0.35); sfx.cheer(Math.min(1, n * 0.45));
+    if (tp > stats.bestFlip) { stats.bestFlip = tp; stats.bestFlipName = (layout ? 'LAYOUT ' : '') + name; }
+    crowdExcite = Math.min(1.6, crowdExcite + 0.3 + n * 0.35); sfx.cheer(Math.min(1, n * 0.45));
   }
+  if (legs) { pts += KNEE_PTS; lines.push([`KNEE HANG +${KNEE_PTS}`, '']); }
   if (advanced > 1) { pts += 400 * (advanced - 1); lines.push([advanced === 2 ? 'SKIP!' : `SKIP ×${advanced - 1}!`, '']); }
   let perfect = Math.abs(diff) < 0.32;
   if (perfect) { pts *= 1.5; lines.push(['PERFECT CATCH', '']); }
@@ -763,7 +809,7 @@ function catchRing(r, th, diff, hx, hy) {
     if (lives < 5) { lives++; popup('+1 LIFE', 'big'); } else { score += 1000; popup('GOLD +1000', 'big'); }
     sfx.life(); burst(rp.x, rp.y, 40, [0xffd23d, 0xffffff], 6, 4);
   }
-  if (n === 0) crowdExcite = Math.min(1.6, crowdExcite + 0.15);
+  if (halfTurns === 0) crowdExcite = Math.min(1.6, crowdExcite + 0.15);
   if (r.i > P.maxRing && r.i % 10 === 0) { popup(`ZONE ${r.i / 10 + 1}!`, 'big'); cameraFlashes(20); }
   P.maxRing = Math.max(P.maxRing, r.i);
   if (r.i >= 3) tutorialDone = true;
@@ -784,7 +830,7 @@ function land() {
 }
 function respawn() {
   const r = P.lastRing;
-  Object.assign(P, { mode: 'hang', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, tuck: 0, reach: 0, ...HANG_FX });
+  Object.assign(P, { mode: 'hang', hold: 'hands', ring: r, theta: 0.35, omega: 0, grip: 1, reaching: false, kickUsed: false, kickDir: 0, tuck: 0, reach: 0, ...HANG_FX });
   r.fumbleT = 0;
   hangPos();
 }
@@ -852,7 +898,7 @@ function updatePlayer(dt) {
     }
     // catch offsets ease out; body swing-through and strap stretch are damped springs
     const dk = Math.exp(-12 * dt);
-    P.handOffX *= dk; P.handOffY *= dk; P.strapOff *= dk;
+    P.grabOffX *= dk; P.grabOffY *= dk; P.strapOff *= dk;
     P.visOffV += (-140 * P.visOff - 13 * P.visOffV) * dt; P.visOff += P.visOffV * dt;
     P.stretchV += (-260 * P.stretch - 14 * P.stretchV) * dt; P.stretch += P.stretchV * dt;
     capEnergy();
@@ -864,14 +910,14 @@ function updatePlayer(dt) {
     hangPos();
     P.phi = P.theta;
     if (state === 'play') {
-      P.grip -= dt / GRIP_TIME;
+      P.grip -= dt / (P.hold === 'legs' ? GRIP_TIME_LEGS : GRIP_TIME);
       if (P.grip <= 0) { P.grip = 0; release(true); }
     }
   } else if (P.mode === 'air') {
     P.releaseT += dt;
     P.tuck += ((input.tuck ? 1 : 0) - P.tuck) * Math.min(1, dt * 12);
     P.reach += ((P.reaching ? 1 : 0) - P.reach) * Math.min(1, dt * 14);
-    const hx0 = P.x - HC * Math.sin(P.phi), hy0 = P.y + HC * Math.cos(P.phi);
+    const x0 = P.x, y0 = P.y, phi0 = P.phi;
     // holding a tuck builds angular momentum; opening up raises inertia so the spin slows naturally
     const sdir = Math.sign(P.spinBase) || 1;
     if (input.tuck) P.angMom = sdir * Math.min(TUCK_L, sdir * P.angMom + 12 * dt);
@@ -887,7 +933,7 @@ function updatePlayer(dt) {
     const rel = Math.abs(P.phi - P.phiStart);
     const shown = Math.floor((rel + 1.2) / TAU);
     if (shown > P.flipShown) { P.flipShown = shown; popup(shown + '×', 'small'); sfx.flip(shown); }
-    if (P.reaching && P.releaseT > 0.1) tryCatch(hx0, hy0);
+    if (P.reaching && P.releaseT > 0.1) tryCatch(x0, y0, phi0);
     // motion trail (rainbow in fever)
     const tc = fever ? PARTY[Math.floor(time * 20) % PARTY.length] : (P.tuck > 0.5 ? 0xffd23d : 0x9fc0ff);
     for (let k = 0; k < (fever ? 3 : 2); k++)
@@ -928,8 +974,8 @@ function updateRings(dt) {
     let glow = 0;
     if (state !== 'over' && P.lastRing && r.i === P.lastRing.i + 1) glow = 0.35 + 0.25 * Math.sin(time * 7);
     if (P.mode === 'air' && P.reaching) {
-      const rp = ringHand(r), hx = P.x - HC * Math.sin(P.phi), hy = P.y + HC * Math.cos(P.phi);
-      if (Math.hypot(hx - rp.x, hy - rp.y) < CATCH_R * 1.8) glow = 0.9;
+      const rp = ringHand(r), hp = handPt(), kp = kneePt();
+      if (Math.min(Math.hypot(hp.x - rp.x, hp.y - rp.y), Math.hypot(kp.x - rp.x, kp.y - rp.y)) < CATCH_R * 1.8) glow = 0.9;
     }
     if (r.gold) glow = Math.max(glow, 0.25);
     r.mat.emissive.setHex(r.gold ? 0xffb000 : 0xff9a2e);
@@ -985,8 +1031,8 @@ function updateTrajectory() {
       phi += airSpin(phi, angMom, 0, steer) * h;
       vy -= G * h; x += vx * h; y += vy * h; t += h;
     }
-    const hx = x - HC * Math.sin(phi), hy = y + HC * Math.cos(phi);
-    tPos[i * 3] = hx; tPos[i * 3 + 1] = y < 1.4 ? -99 : hy; tPos[i * 3 + 2] = 0;
+    const g = legsUp(phi) ? kneePt(x, y, phi) : handPt(x, y, phi); // whichever end would grab
+    tPos[i * 3] = g.x; tPos[i * 3 + 1] = y < 1.4 ? -99 : g.y; tPos[i * 3 + 2] = 0;
   }
   tGeo.attributes.position.needsUpdate = true;
 }
@@ -999,7 +1045,10 @@ function renderPlayer(dt) {
     P.kickPulse *= Math.exp(-5 * dt);
     // legs trail the swing and also lag the body's swing-through after a catch
     const trail = clamp(-0.14 * P.omega - 0.06 * P.visOffV, -0.6, 0.6);
-    tgt = [trail + 1.3 * P.kickPulse, -0.15 - 0.5 * P.kickPulse - 0.4 * P.stretch, 0, 0];
+    if (P.hold === 'legs') // knees hooked over the bar, arms dangling and swinging to pump
+      tgt = [0.2 + 0.3 * P.stretch, -1.75 - 0.3 * P.kickPulse, -1.4 * trail + 1.4 * P.kickPulse, -0.25 - 0.4 * P.kickPulse];
+    else
+      tgt = [trail + 1.3 * P.kickPulse, -0.15 - 0.5 * P.kickPulse - 0.4 * P.stretch, 0, 0];
   } else if (P.mode === 'air') {
     const t = P.tuck, r = P.reach;
     tgt = [0.15 + 2.3 * t, -0.1 - 2.4 * t, lerp(-0.9 - 1.3 * t, 0, r), lerp(-0.3 - 0.6 * t, 0, r)];
@@ -1060,7 +1109,8 @@ function updateHUD() {
       const amp = Math.sqrt(P.theta * P.theta + (P.omega * P.omega) * Le() / G);
       if (amp < 1.0) hint = `Tap TUCK (${T_}) at the bottom of the swing to pump`;
       else hint = `Press GRIP (${G_}) to let go as you swing forward & up!`;
-    } else if (P.mode === 'air') hint = P.reaching ? `Reaching… open up to catch!` : `Press GRIP to reach for a bar · Hold TUCK to flip`;
+    } else if (P.mode === 'air') hint = P.reaching ? (legsUp(P.phi) ? `Feet up — hook the bar with your knees!` : `Reaching… open up to catch with your hands!`)
+      : `Press GRIP to reach for a bar · Hold TUCK to flip`;
   } else if (state === 'play' && P.mode === 'hang' && P.grip < 0.3) hint = 'GRIP SLIPPING — GO!';
   ui.hint.textContent = hint;
   ui.hint.classList.toggle('on', !!hint);

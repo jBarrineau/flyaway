@@ -9,7 +9,11 @@ An arcade flying trapeze game built with three.js. Swing, let go, flip, and catc
 - **TUCK**: F, Shift, ↓, right click, or the left side of the screen. Tap it at the bottom of the swing to pump higher, and hold it in the air to flip.
 - **H** turns the aim assist on or off. **M** mutes the sound.
 
-To catch a bar, you have to open up from your tuck and be hands-up. Layouts and perfect catches score ×1.5, chained catches build a combo, and gold bars give you an extra life.
+You can catch a bar two ways:
+- **Hands**: open up from your tuck and be hands-up.
+- **Knees**: be upside-down, feet-up, and you hook the bar with your knees. Tucked or not, it works. A knee hang scores +200, but your grip runs out faster (7 seconds instead of 11).
+
+When you reach in the air, your body turns to whichever is closer, hands-up or feet-up. Tricks count in half-turns, so a knee catch after a hands release is a half turn, 1½, 2½ and so on. Layouts and perfect catches score ×1.5, chained catches build a combo, and gold bars give you an extra life.
 
 ### Extras
 - **Stars**: Grab ★ in mid-air. Each star in a streak is worth more than the last. Pink **mega-stars** sit high up and are worth 1,000.
