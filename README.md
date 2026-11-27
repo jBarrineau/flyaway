@@ -2,6 +2,8 @@
 
 An arcade gymnastics rings game built with three.js. Swing, let go, flip, and catch the next ring.
 
+### ▶ [Play now](https://jbarrineau.github.io/flyaway/)
+
 ## Play
 - **GRIP**: Space, left click, or the right side of the screen. Hold it to hang on, let go to fly, and hold it again in the air to catch a ring.
 - **TUCK**: F, Shift, ↓, right click, or the left side of the screen. Tap it at the bottom of the swing to pump higher, and hold it in the air to flip.
